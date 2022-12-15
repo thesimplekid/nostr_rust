@@ -5,6 +5,7 @@
 // https://gitlab.com/p2kishimoto/nostr-rs-sdk/-/tree/master/crates/nostr-sdk-base
 
 use crate::events::{Event, EventPrepare};
+use crate::keys::verifying_key_from_hex;
 use crate::nostr_client::Client;
 use crate::req::ReqFilter;
 use crate::utils::get_timestamp;
@@ -15,7 +16,18 @@ use aes::{
 };
 use base64::{decode, encode};
 use cbc::{Decryptor, Encryptor};
-use secp256k1::{ecdh, rand::random, PublicKey, SecretKey, XOnlyPublicKey};
+use k256::ecdh::EphemeralSecret;
+// use secp256k1::{ecdh, rand::random, PublicKey, SecretKey, XOnlyPublicKey};
+use elliptic_curve::ecdh::SharedSecret;
+use elliptic_curve::ScalarCore;
+use elliptic_curve::{NonZeroScalar, PublicKey};
+use k256::Secp256k1;
+use k256::{
+    ecdh,
+    schnorr::{SigningKey, VerifyingKey},
+    Scalar,
+};
+use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use std::convert::From;
 use std::str::FromStr;
@@ -46,20 +58,19 @@ pub enum Error {
 
     #[error("Wrong encryption block mode.The content must be encrypted using CBC mode!")]
     WrongBlockMode,
-
-    #[error("Secp256k1 Error: {}", _0)]
-    Secp256k1Error(secp256k1::Error),
+    // #[error("Secp256k1 Error: {}", _0)]
+    // Secp256k1Error(secp256k1::Error),
 }
 
-impl From<secp256k1::Error> for Error {
-    fn from(err: secp256k1::Error) -> Self {
-        Self::Secp256k1Error(err)
-    }
-}
+//impl From<secp256k1::Error> for Error {
+//    fn from(err: secp256k1::Error) -> Self {
+//        Self::Secp256k1Error(err)
+//    }
+//}
 
 pub fn decrypt(
-    sk: &SecretKey,
-    pk: &XOnlyPublicKey,
+    sk: &SigningKey,
+    pk: &VerifyingKey,
     encrypted_content: &str,
 ) -> Result<String, Error> {
     let parsed_content: Vec<&str> = encrypted_content.split("?iv=").collect();
@@ -81,9 +92,9 @@ pub fn decrypt(
     String::from_utf8(result.try_into().unwrap()).map_err(|_| Error::Utf8EncodeError)
 }
 
-pub fn encrypt(sk: &SecretKey, pk: &XOnlyPublicKey, text: &str) -> Result<String, Error> {
+pub fn encrypt(sk: &SigningKey, pk: &VerifyingKey, text: &str) -> Result<String, Error> {
     let key: Vec<u8> = generate_shared_key(sk, pk)?;
-    let iv: [u8; 16] = random();
+    let iv: [u8; 16] = rand::random();
 
     let cipher = Aes256CbcEnc::new(key.as_slice().into(), &iv.into());
     let result: Vec<u8> = cipher.encrypt_padded_vec_mut::<Pkcs7>(text.as_bytes());
@@ -91,20 +102,24 @@ pub fn encrypt(sk: &SecretKey, pk: &XOnlyPublicKey, text: &str) -> Result<String
     Ok(format!("{}?iv={}", encode(result), encode(iv)))
 }
 
-fn generate_shared_key(sk: &SecretKey, pk: &XOnlyPublicKey) -> Result<Vec<u8>, Error> {
-    let pk_normalized: PublicKey = from_schnorr_pk(pk)?;
-    let ssp = ecdh::shared_secret_point(&pk_normalized, sk);
+fn generate_shared_key(sk: &SigningKey, pk: &VerifyingKey) -> Result<Vec<u8>, Error> {
+    let pk_normalized: PublicKey<Secp256k1> = from_schnorr_pk(pk)?;
+    // let ssp = EphemeralSecret::random(&mut OsRng).diffie_hellman(&pk_normalized); // ecdh::shared_secret_point(&pk_normalized, sk);
+    let shared_secret: SharedSecret<Secp256k1> = elliptic_curve::ecdh::diffie_hellman(
+        NonZeroScalar::from_repr(sk.to_bytes()).unwrap(),
+        pk.as_affine(),
+    );
 
     let mut shared_key = [0u8; 32];
-    shared_key.copy_from_slice(&ssp[..32]);
+    shared_key.copy_from_slice(&shared_secret.raw_secret_bytes()[..32]);
     Ok(shared_key.to_vec())
 }
 
-fn from_schnorr_pk(schnorr_pk: &XOnlyPublicKey) -> Result<PublicKey, Error> {
-    let mut pk = String::from("02");
-    pk.push_str(&schnorr_pk.to_string());
-
-    Ok(PublicKey::from_str(&pk)?)
+fn from_schnorr_pk(schnorr_pk: &VerifyingKey) -> Result<PublicKey<Secp256k1>, Error> {
+    // let mut pk = String::from("02");
+    // pk.push_str(&hex::encode(schnorr_pk.to_bytes()));
+    let v = schnorr_pk.to_bytes();
+    Ok(PublicKey::from_sec1_bytes(&v).unwrap())
 }
 
 impl Client {
@@ -127,7 +142,7 @@ impl Client {
         message: &str,
         difficulty_target: u16,
     ) -> Result<Event, Error> {
-        let x_pub_key = secp256k1::XOnlyPublicKey::from_str(hex_pubkey)?;
+        let x_pub_key = verifying_key_from_hex(hex_pubkey); // secp256k1::XOnlyPublicKey::from_str(hex_pubkey)?;
         let encrypted_message = encrypt(&identity.secret_key, &x_pub_key, message)?;
 
         let event = EventPrepare {
@@ -205,9 +220,9 @@ impl Client {
         hex_pubkey: &str,
         limit: u64,
     ) -> Result<Vec<PrivateMessage>, Error> {
-        let x_pub_key = secp256k1::XOnlyPublicKey::from_str(hex_pubkey)?;
+        let x_pub_key = verifying_key_from_hex(hex_pubkey); // secp256k1::XOnlyPublicKey::from_str(hex_pubkey)?;
         let events =
-            self.get_private_events_with(identity, x_pub_key.to_string().as_str(), limit)?;
+            self.get_private_events_with(identity, &hex::encode(&x_pub_key.to_bytes()), limit)?;
         let mut messages: Vec<PrivateMessage> = vec![];
 
         for event in events {

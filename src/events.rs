@@ -1,13 +1,17 @@
 use std::fmt;
 
-use secp256k1::{schnorr::Signature, KeyPair, XOnlyPublicKey, SECP256K1};
+// use secp256k1::{schnorr::Signature, KeyPair, XOnlyPublicKey, SECP256K1};
+use k256::schnorr::signature::{PrehashSignature, Signer, Verifier};
 use serde_derive::{Deserialize, Serialize};
 use serde_json::json;
 use std::str::FromStr;
 
 use thiserror::Error;
 
-use crate::Identity;
+use crate::{
+    keys::{signature_from_hex, verifying_key_from_hex},
+    Identity,
+};
 
 /// EventPrepare is the struct used to prepare an event before publishing it (signing it and assigning it an id)
 #[derive(Serialize, Deserialize, Debug)]
@@ -118,18 +122,14 @@ impl EventPrepare {
             self.to_pow_event(difficulty_target).unwrap();
         }
 
-        let message = secp256k1::Message::from_hashed_data::<secp256k1::hashes::sha256::Hash>(
-            self.get_content().as_bytes(),
+        let signature = hex::encode(
+            secret_key
+                .secret_key
+                .sign(self.get_content().as_bytes())
+                .as_bytes(),
         );
 
-        let signature = SECP256K1
-            .sign_schnorr(
-                &message,
-                &KeyPair::from_secret_key(SECP256K1, &secret_key.secret_key),
-            )
-            .to_string();
-
-        Event {
+        let event = Event {
             id: self.get_content_id(),
             pub_key: self.pub_key.clone(),
             created_at: self.created_at,
@@ -137,7 +137,9 @@ impl EventPrepare {
             tags: self.tags.clone(),
             content: self.content.clone(),
             sig: signature,
-        }
+        };
+        println!("Event: {}", event);
+        event
     }
 }
 
@@ -164,15 +166,17 @@ pub struct Event {
 
 #[derive(Error, Debug, Eq, PartialEq)]
 pub enum EventError {
-    #[error("Secp256k1 Error: {}", _0)]
-    Secp256k1Error(secp256k1::Error),
+    //    #[error("Secp256k1 Error: {}", _0)]
+    //    Secp256k1Error(secp256k1::Error),
 }
 
+/*
 impl From<secp256k1::Error> for EventError {
-    fn from(err: secp256k1::Error) -> Self {
-        Self::Secp256k1Error(err)
-    }
+fn from(err: secp256k1::Error) -> Self {
+Self::Secp256k1Error(err)
 }
+}
+*/
 
 impl Event {
     /// get_content returns the content of the event
@@ -243,15 +247,11 @@ impl Event {
     /// event.verify().unwrap()
     /// ```
     pub fn verify(&self) -> Result<(), EventError> {
-        let message = secp256k1::Message::from_hashed_data::<secp256k1::hashes::sha256::Hash>(
-            self.get_content().as_bytes(),
+        let verify_key = verifying_key_from_hex(&self.pub_key);
+        verify_key.verify(
+            &self.get_content().as_bytes(),
+            &signature_from_hex(&self.sig),
         );
-
-        SECP256K1.verify_schnorr(
-            &Signature::from_str(&self.sig)?,
-            &message,
-            &XOnlyPublicKey::from_str(&self.pub_key)?,
-        )?;
         Ok(())
     }
 }

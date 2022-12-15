@@ -1,4 +1,5 @@
-use secp256k1::{PublicKey, SecretKey};
+//use secp256k1::{PublicKey, SecretKey};
+use k256::schnorr::{SigningKey, VerifyingKey};
 use std::str::FromStr;
 
 pub mod bech32;
@@ -13,9 +14,10 @@ pub mod websocket;
 pub type Message = tungstenite::Message;
 
 /// Nostr Identity with secret and public keys
+#[derive(Clone)]
 pub struct Identity {
-    pub secret_key: SecretKey,
-    pub public_key: PublicKey,
+    pub secret_key: SigningKey,
+    pub public_key: VerifyingKey,
     pub public_key_str: String,
     pub address: String,
 }

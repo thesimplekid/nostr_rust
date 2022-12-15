@@ -16,30 +16,32 @@ pub struct RelayInformationDocument {
     pub version: Option<String>,
 }
 
-#[derive(Error, Debug, Eq, PartialEq)]
+#[derive(Error, Debug)]
 pub enum NIP11Error {
     #[error("The relay information document is invalid")]
     InvalidRelayInformationDocument,
 
     #[error("The relay information document is not accessible")]
     RelayInformationDocumentNotAccessible,
+
+    #[error("Min request error")]
+    MinreqError(minreq::Error),
+}
+
+impl From<minreq::Error> for NIP11Error {
+    fn from(err: minreq::Error) -> Self {
+        Self::MinreqError(err)
+    }
 }
 
 pub fn get_relay_information_document(
     relay_url: &str,
 ) -> Result<RelayInformationDocument, NIP11Error> {
     let relay_url = relay_url.replacen("ws", "http", 1);
-    let relay_response: RelayInformationDocument = match reqwest::blocking::Client::new()
-        .get(relay_url)
-        .header("Accept", "application/nostr+json")
-        .send()
-    {
-        Ok(response) => match response.json() {
-            Ok(json) => json,
-            Err(_) => return Err(NIP11Error::InvalidRelayInformationDocument),
-        },
-        Err(_) => return Err(NIP11Error::RelayInformationDocumentNotAccessible),
-    };
+    let response = minreq::get(relay_url)
+        .with_header("Accept", "application/nostr+json")
+        .send()?
+        .json::<RelayInformationDocument>()?;
 
-    Ok(relay_response)
+    Ok(response)
 }
