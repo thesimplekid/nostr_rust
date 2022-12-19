@@ -1,7 +1,8 @@
 use crate::events::Event;
 use crate::req::{Req, ReqFilter};
 use crate::websocket::{self, SimplifiedWS};
-use crate::Message;
+// use crate::Message;
+use ewebsock::WsMessage;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -9,7 +10,7 @@ use thiserror::Error;
 
 #[derive(Error, Debug, Eq, PartialEq)]
 pub enum ClientError {
-    #[error("Error while trying to connect to the websocket server")]
+    #[error("Error while trying to connect to the websocket server: {}", _0)]
     WSError(websocket::SimplifiedWSError),
 
     #[error("Already subscribed to the event")]
@@ -28,7 +29,7 @@ impl From<websocket::SimplifiedWSError> for ClientError {
 /// Nostr Client
 pub struct Client {
     pub relays: HashMap<String, Arc<Mutex<SimplifiedWS>>>,
-    pub subscriptions: HashMap<String, Vec<Message>>,
+    pub subscriptions: HashMap<String, Vec<ewebsock::WsMessage>>,
 }
 
 impl Client {
@@ -91,14 +92,8 @@ impl Client {
         }
 
         // Close the connection
-        self.relays
-            .remove(relay)
-            .unwrap()
-            .lock()
-            .unwrap()
-            .socket
-            .close(None)
-            .unwrap();
+        //        self.relays.remove(relay).unwrap().lock().unwrap();
+        // TODO check this closes
 
         Ok(())
     }
@@ -106,7 +101,7 @@ impl Client {
     /// Publish a Nostr event
     pub fn publish_event(&mut self, event: &Event) -> Result<(), ClientError> {
         let json_stringified = json!(["EVENT", event]).to_string();
-        let message = Message::text(json_stringified);
+        let message = WsMessage::Text(json_stringified);
 
         for relay in self.relays.values() {
             let mut relay = relay.lock().unwrap();
@@ -165,12 +160,13 @@ impl Client {
     /// // Wait 3s for the thread to finish
     /// std::thread::sleep(std::time::Duration::from_secs(3));
     /// ```
-    pub fn next_data(&mut self) -> Result<Vec<(String, tungstenite::Message)>, ClientError> {
-        let mut events: Vec<(String, tungstenite::Message)> = Vec::new();
+    pub fn next_data(&mut self) -> Result<Vec<(String, ewebsock::WsEvent)>, ClientError> {
+        let mut events: Vec<(String, ewebsock::WsEvent)> = Vec::new();
 
         for (relay_name, socket) in self.relays.iter() {
-            let message = socket.lock().unwrap().read_message()?;
-            events.push((relay_name.clone(), message));
+            if let Ok(message) = socket.lock().unwrap().read_message() {
+                events.push((relay_name.clone(), message));
+            }
         }
 
         Ok(events)
@@ -198,7 +194,7 @@ impl Client {
     /// ```
     pub fn subscribe(&mut self, filters: Vec<ReqFilter>) -> Result<String, ClientError> {
         let req = Req::new(None, filters);
-        let message = Message::text(req.to_string());
+        let message = WsMessage::Text(req.to_string());
 
         for relay in self.relays.values() {
             let mut relay = relay.lock().unwrap();
@@ -235,7 +231,7 @@ impl Client {
         filters: Vec<ReqFilter>,
     ) -> Result<(), ClientError> {
         let req = Req::new(Some(subscription_id), filters);
-        let message = Message::text(req.to_string());
+        let message = WsMessage::Text(req.to_string());
 
         for relay in self.relays.values() {
             let mut relay = relay.lock().unwrap();
@@ -267,7 +263,7 @@ impl Client {
     /// client.unsubscribe(&subscription_id).unwrap();
     /// ```
     pub fn unsubscribe(&mut self, subscription_id: &str) -> Result<(), ClientError> {
-        let message = Message::text(json!(["CLOSE", subscription_id]).to_string());
+        let message = WsMessage::Text(json!(["CLOSE", subscription_id]).to_string());
 
         for relay in self.relays.values() {
             let mut relay = relay.lock().unwrap();
@@ -278,7 +274,7 @@ impl Client {
     }
 
     /// Add event to a subscription
-    pub fn add_event(&mut self, subscription_id: &str, message: Message) {
+    pub fn add_event(&mut self, subscription_id: &str, message: WsMessage) {
         // Check if the subscription exists
         if !self.subscriptions.contains_key(subscription_id) {
             self.subscriptions
@@ -286,6 +282,7 @@ impl Client {
         }
 
         // Check if the message is already in the subscription
+        /*
         if !self.subscriptions[subscription_id].contains(&message) {
             // Add the message to the subscription
             self.subscriptions
@@ -293,10 +290,11 @@ impl Client {
                 .unwrap()
                 .push(message);
         }
+        */
     }
 
     /// Get events and remove them from the subscription
-    pub fn get_events(&mut self, subscription_id: &str) -> Option<Vec<Message>> {
+    pub fn get_events(&mut self, subscription_id: &str) -> Option<Vec<WsMessage>> {
         self.subscriptions.remove(subscription_id)
     }
 
@@ -329,14 +327,23 @@ impl Client {
             let mut break_loop = false;
 
             for (_, message) in data {
-                let event: Value = serde_json::from_str(&message.to_string()).unwrap();
+                println!("{:?}", message);
+                match message {
+                    ewebsock::WsEvent::Message(message) => match message {
+                        ewebsock::WsMessage::Text(msg) => {
+                            let event: Value = serde_json::from_str(&msg.to_string()).unwrap();
 
-                if event[0] == "EOSE" && event[1].as_str() == Some(&id) {
-                    break_loop = true;
-                    break;
+                            if event[0] == "EOSE" && event[1].as_str() == Some(&id) {
+                                break_loop = true;
+                                break;
+                            }
+
+                            self.add_event(&id, WsMessage::Text(msg));
+                        }
+                        _ => (),
+                    },
+                    _ => (),
                 }
-
-                self.add_event(&id, message);
             }
 
             if break_loop {
@@ -350,9 +357,14 @@ impl Client {
         // Get the events
         if let Some(messages) = self.get_events(&id) {
             for message in messages {
-                let event: Value = serde_json::from_str(&message.to_string()).unwrap();
-                let event_object: Event = serde_json::from_value(event[2].clone()).unwrap();
-                events.push(event_object);
+                match message {
+                    WsMessage::Text(msg) => {
+                        let event: Value = serde_json::from_str(&msg.to_string()).unwrap();
+                        let event_object: Event = serde_json::from_value(event[2].clone()).unwrap();
+                        events.push(event_object);
+                    }
+                    _ => (),
+                }
             }
         }
         Ok(events)

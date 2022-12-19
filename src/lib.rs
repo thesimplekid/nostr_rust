@@ -11,7 +11,7 @@ pub mod req;
 pub mod utils;
 pub mod websocket;
 
-pub type Message = tungstenite::Message;
+// pub type Message = tungstenite::Message;
 
 /// Nostr Identity with secret and public keys
 #[derive(Clone)]

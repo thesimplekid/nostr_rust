@@ -251,7 +251,7 @@ impl Event {
         verify_key.verify(
             &self.get_content().as_bytes(),
             &signature_from_hex(&self.sig),
-        );
+        ).unwrap();
         Ok(())
     }
 }

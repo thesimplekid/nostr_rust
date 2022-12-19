@@ -6,7 +6,7 @@ use crate::{
     nips::nip11,
     nostr_client::{Client, ClientError},
     utils::get_timestamp,
-    Identity, Message,
+    Identity,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -166,7 +166,7 @@ impl Client {
             .collect();
 
         let json_stringified = json!(["EVENT", event]).to_string();
-        let message = Message::text(json_stringified);
+        let message = ewebsock::WsMessage::Text(json_stringified);
 
         for relay in supported_relays.values() {
             let mut relay = relay.lock().unwrap();

@@ -1,8 +1,9 @@
 // Simplified websocket implementation
 use std::net::TcpStream;
 use thiserror::Error;
-use tungstenite::{connect, stream::MaybeTlsStream, Message, WebSocket};
+//use tungstenite::{connect, stream::MaybeTlsStream, Message, WebSocket};
 use url::Url;
+use ewebsock::{connect, WsMessage, WsSender, WsReceiver, WsEvent};
 
 #[derive(Error, Debug, Eq, PartialEq)]
 pub enum SimplifiedWSError {
@@ -21,7 +22,8 @@ pub enum SimplifiedWSError {
 
 pub struct SimplifiedWS {
     pub url: Url,
-    pub socket: WebSocket<MaybeTlsStream<TcpStream>>,
+    pub sender: WsSender,
+    pub reciver: WsReceiver,
 }
 
 impl SimplifiedWS {
@@ -31,25 +33,33 @@ impl SimplifiedWS {
             Err(_) => return Err(SimplifiedWSError::UrlParseError),
         };
 
-        let (socket, _) = match connect(&url) {
+        let (sender, reciver) = match connect(&*url.to_string()) {
             Ok((socket, response)) => (socket, response),
             Err(_) => return Err(SimplifiedWSError::ConnectionError),
         };
 
-        Ok(Self { url, socket })
+        Ok(Self { url, sender, reciver })
     }
 
-    pub fn send_message(&mut self, message: &Message) -> Result<(), SimplifiedWSError> {
-        match self.socket.write_message(message.clone()) {
-            Ok(_) => Ok(()),
-            Err(_) => Err(SimplifiedWSError::SendMessageError),
+    pub fn send_message(&mut self, message: &WsMessage) -> Result<(), SimplifiedWSError> {
+        self.sender.send(message.clone());
+       Ok(())
+    }
+
+    pub fn read_message(&mut self) -> Result<WsEvent, SimplifiedWSError> {
+        let mut events = vec![];
+        while let Some(event) = self.reciver.try_recv() {
+            events.push(event);
         }
-    }
 
-    pub fn read_message(&mut self) -> Result<Message, SimplifiedWSError> {
-        match self.socket.read_message() {
-            Ok(message) => Ok(message),
-            Err(_) => Err(SimplifiedWSError::ReceiveMessageError),
+        // println!("{:?}", events);
+
+        // Err(SimplifiedWSError::ReceiveMessageError)
+
+
+        match self.reciver.try_recv() {
+            Some(message) => Ok(message),
+            None => Err(SimplifiedWSError::ReceiveMessageError),
         }
     }
 }
